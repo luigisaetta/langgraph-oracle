@@ -23,7 +23,8 @@ You need:
 - Python 3.11 or later.
 - A LangGraph application.
 - Oracle Autonomous Database.
-- A database user allowed to create tables and indexes for the first setup.
+- A dedicated database schema owner for LangGraph checkpointing.
+- A dedicated schema owner allowed to create tables and indexes during the first setup.
 - The ADB wallet downloaded and unzipped locally, unless your environment uses a different supported `oracledb` connection mode.
 - The `langgraph-oracle` package installed in your Python environment.
 
@@ -55,7 +56,7 @@ Do not hard-code credentials or wallet paths.
 Use environment variables or your application's secret manager:
 
 ```bash
-export LANGGRAPH_ORACLE_ADB_USER="admin"
+export LANGGRAPH_ORACLE_ADB_USER="LANGGRAPH_CHECKPOINT"
 export LANGGRAPH_ORACLE_ADB_PASSWORD="..."
 export LANGGRAPH_ORACLE_ADB_DSN="myadb_low"
 export LANGGRAPH_ORACLE_ADB_CONFIG_DIR="/path/to/wallet"
@@ -65,11 +66,23 @@ export LANGGRAPH_ORACLE_ADB_WALLET_PASSWORD="..."
 
 For ADB wallet connections, `config_dir` and `wallet_location` usually point to the unzipped wallet directory.
 
+## Dedicated Schema
+
+Do not use the ADB administrative schema for checkpointing.
+
+Create and use a dedicated schema owner for LangGraph checkpoint tables, for example `LANGGRAPH_CHECKPOINT`. The application should connect as that schema owner, and `setup()` should create the checkpoint tables inside that schema.
+
+This keeps checkpoint data isolated from administrative objects and makes permissions, cleanup, backup, and auditing easier to manage.
+
+The exact SQL for creating the schema user depends on your organization's security standards. At minimum, the dedicated schema needs enough privileges to connect and to create the checkpointer tables and indexes during setup. After setup, runtime usage only needs privileges on those checkpointer objects.
+
 ## One-Time Database Setup
 
 Run `setup()` once before using the checkpointer.
 
-`setup()` creates the checkpointer tables and indexes. It does not run silently during normal graph execution.
+Connect as the dedicated checkpoint schema owner, then call `setup()`.
+
+`setup()` creates the checkpointer tables and indexes in the connected schema. It does not run silently during normal graph execution.
 
 ```python
 import os

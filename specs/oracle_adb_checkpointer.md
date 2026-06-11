@@ -116,7 +116,7 @@ checkpointer = OracleADBCheckpointer(conn=connection)
 from langgraph_oracle.checkpoint import OracleADBCheckpointer
 
 with OracleADBCheckpointer.from_connection_params(
-    user="admin",
+    user="LANGGRAPH_CHECKPOINT",
     password=password,
     dsn="mydb_low",
     config_dir="/path/to/unzipped/wallet",
@@ -152,6 +152,8 @@ ADB wallet-based configuration must support:
 - `password`
 
 Credentials and wallet paths must never be hard-coded.
+
+The checkpointer must be used with a dedicated database schema owner for checkpointing. It must not use the ADB administrative schema in examples, tests, or documentation. The dedicated schema owns the checkpointer tables and indexes created by `setup()`.
 
 ## Database Schema
 
