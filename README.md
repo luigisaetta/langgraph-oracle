@@ -1,5 +1,10 @@
 # langgraph-oracle
 
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Black](https://img.shields.io/badge/code%20style-black-000000)
+![Pylint](https://img.shields.io/badge/lint-pylint-yellowgreen)
+![Pytest](https://img.shields.io/badge/tests-pytest-blueviolet)
+
 `langgraph-oracle` provides reusable facilities that make it easier to build and operate LangGraph applications in Oracle Cloud Infrastructure (OCI) environments.
 
 The first facility planned for this repository is a robust LangGraph checkpointer backed by Oracle Autonomous Database (ADB). The project will then grow with additional OCI-oriented helpers and integrations that keep LangGraph applications easier to configure, persist, test, and run in production.
@@ -42,11 +47,40 @@ This repository follows a spec-driven workflow.
 
 Code should not be added before the related specification exists.
 
+## Local Setup
+
+Create the required Conda environment:
+
+```bash
+conda env create -f environment.yml
+```
+
+Activate it:
+
+```bash
+conda activate langgraph-oracle
+```
+
+The environment installs the package in editable mode with development dependencies.
+
 ## Testing Environment
 
 All tests must be executed in the `langgraph-oracle` Conda environment.
 
-Typical commands will be documented once the package structure is created. The expected toolchain is:
+Use:
+
+```bash
+conda run -n langgraph-oracle python -m pytest
+```
+
+Formatting and linting:
+
+```bash
+conda run -n langgraph-oracle python -m black --check src tests
+conda run -n langgraph-oracle python -m pylint src tests
+```
+
+The expected toolchain is:
 
 - `black` for Python formatting.
 - `pylint` for Python linting.
@@ -63,13 +97,12 @@ Current artifacts:
 - `AGENTS.md`: project guidance for agents and contributors.
 - `README.md`: project overview and development expectations.
 - `LICENSE`: MIT license.
-
-Planned next artifacts:
-
-- `specs/`: specifications for the Oracle ADB checkpointer and future facilities.
+- `specs/oracle_adb_checkpointer.md`: first feature specification.
+- `pyproject.toml`: Python packaging, formatting, linting, and pytest configuration.
+- `environment.yml`: Conda environment definition for `langgraph-oracle`.
+- `src/langgraph_oracle/`: package skeleton.
+- `tests/`: pytest test suite.
 - `CHANGELOG.md`: dated record of significant project changes.
-- Python package structure for the implementation.
-- Unit and integration test structure.
 
 ## Design Principles
 

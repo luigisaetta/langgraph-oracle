@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "langgraph-oracle"
+version = "0.1.0"
+description = "OCI-oriented facilities for LangGraph, starting with an Oracle ADB checkpointer."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "L. Saetta" }
+]
+dependencies = [
+  "langgraph",
+  "oracledb"
+]
+
+[project.optional-dependencies]
+dev = [
+  "black",
+  "pylint",
+  "pytest",
+  "pytest-cov"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config"
+]
+markers = [
+  "integration: marks tests that require external services or credentials",
+  "oracle_adb: marks tests that require Oracle Autonomous Database"
+]
+
+[tool.pylint.main]
+py-version = "3.11"
+source-roots = ["src", "tests"]
+
+[tool.pylint.format]
+max-line-length = 88
