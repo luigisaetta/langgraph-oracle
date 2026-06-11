@@ -39,6 +39,26 @@ Additional facilities may be added later, but they should follow the same princi
 
 - [Oracle ADB Checkpointer](docs/oracle-adb-checkpointer.md): how to configure and use the checkpointer in LangGraph agents.
 
+## Documentation Site
+
+The documentation site is built with MkDocs and Material for MkDocs.
+
+Local preview:
+
+```bash
+conda run -n langgraph-oracle mkdocs serve
+```
+
+Production build:
+
+```bash
+conda run -n langgraph-oracle mkdocs build --strict
+```
+
+The GitHub Actions workflow in `.github/workflows/docs.yml` publishes the site to GitHub Pages through the `gh-pages` branch.
+
+For the first publication, enable GitHub Pages in the repository settings and select the `gh-pages` branch as the source after the first workflow run creates it.
+
 ## Development Workflow
 
 This repository follows a spec-driven workflow.

@@ -13,3 +13,4 @@ venv/
 # Build artifacts
 build/
 dist/
+site/

@@ -24,6 +24,10 @@ dev = [
   "pytest",
   "pytest-cov"
 ]
+docs = [
+  "mkdocs",
+  "mkdocs-material"
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

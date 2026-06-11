@@ -1,5 +1,9 @@
 # Changelog
 
+This page mirrors the project changelog.
+
+For the source file, see [`CHANGELOG.md`](https://github.com/luigisaetta/langgraph-oracle/blob/main/CHANGELOG.md).
+
 ## 2026-06-11
 
 - Added the Oracle ADB LangGraph checkpointer specification.
@@ -13,4 +17,3 @@
 - Refactored Oracle checkpointer SQL statement generation into a dedicated module to keep the main checkpointer implementation easier to maintain.
 - Added a dedicated Oracle ADB checkpointer usage guide for LangGraph agents.
 - Updated Oracle ADB documentation and examples to require a dedicated checkpoint schema instead of the ADB administrative schema.
-- Added MkDocs configuration and a GitHub Actions workflow for publishing documentation to GitHub Pages.
