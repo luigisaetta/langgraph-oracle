@@ -102,6 +102,12 @@ The expected primary class name is:
 OracleADBCheckpointer
 ```
 
+The expected async class name is:
+
+```python
+AsyncOracleADBCheckpointer
+```
+
 The class should accept either an existing `oracledb` connection/pool object or connection settings sufficient to create one.
 
 Expected construction patterns:

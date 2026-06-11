@@ -5,6 +5,8 @@ License: MIT
 Description: Tests for the Oracle ADB LangGraph checkpointer.
 """
 
+# pylint: disable=duplicate-code
+
 from __future__ import annotations
 
 from typing import Any

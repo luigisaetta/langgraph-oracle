@@ -14,7 +14,8 @@ With this checkpointer, a LangGraph application can:
 - persist checkpoints in Oracle ADB;
 - store pending writes produced during graph execution;
 - keep checkpoint data outside the application process;
-- use an `oracledb.Connection` or `oracledb.ConnectionPool`.
+- use an `oracledb.Connection` or `oracledb.ConnectionPool`;
+- use an `oracledb.AsyncConnection` or `oracledb.AsyncConnectionPool` through the async checkpointer.
 
 ## Prerequisites
 
@@ -212,9 +213,33 @@ Do not run administrative operations such as `delete_thread`, `delete_for_runs`,
 
 ## Async Applications
 
-`OracleADBCheckpointer` is synchronous.
+Use `AsyncOracleADBCheckpointer` for async LangGraph applications.
 
-The async LangGraph saver methods intentionally raise an explicit unsupported-operation error instead of wrapping blocking calls. A future async saver should use `oracledb.AsyncConnection` or `oracledb.AsyncConnectionPool` directly.
+The async checkpointer uses native `oracledb` async connections. It does not wrap blocking synchronous calls.
+
+```python
+import os
+
+from langgraph_oracle import AsyncOracleADBCheckpointer
+
+
+async with AsyncOracleADBCheckpointer.from_connection_params(
+    user=os.environ["LANGGRAPH_ORACLE_ADB_USER"],
+    password=os.environ["LANGGRAPH_ORACLE_ADB_PASSWORD"],
+    dsn=os.environ["LANGGRAPH_ORACLE_ADB_DSN"],
+    config_dir=os.environ["LANGGRAPH_ORACLE_ADB_CONFIG_DIR"],
+    wallet_location=os.environ["LANGGRAPH_ORACLE_ADB_WALLET_LOCATION"],
+    wallet_password=os.environ["LANGGRAPH_ORACLE_ADB_WALLET_PASSWORD"],
+) as checkpointer:
+    graph = builder.compile(checkpointer=checkpointer)
+
+    result = await graph.ainvoke(
+        {"message": "hello", "count": 0},
+        config={"configurable": {"thread_id": "user-123"}},
+    )
+```
+
+Use `OracleADBCheckpointer` for synchronous `graph.invoke(...)` calls and `AsyncOracleADBCheckpointer` for asynchronous `await graph.ainvoke(...)` calls.
 
 ## Testing ADB Connectivity
 

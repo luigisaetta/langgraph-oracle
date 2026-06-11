@@ -30,6 +30,7 @@ Expected capabilities include:
 - Store, retrieve, list, and update LangGraph checkpoints using Oracle ADB.
 - Define and document the database schema and migration approach.
 - Use a dedicated checkpoint schema owner instead of the ADB administrative schema.
+- Support synchronous and native asynchronous LangGraph usage.
 - Support safe serialization and compatibility expectations.
 - Provide clear configuration for database connectivity and authentication.
 - Handle connection lifecycle, transaction boundaries, and operational errors predictably.
