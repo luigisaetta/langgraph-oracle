@@ -9,13 +9,33 @@ description = "OCI-oriented facilities for LangGraph, starting with an Oracle AD
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "L. Saetta" }
+]
+keywords = ["langgraph", "oracle", "oci", "adb", "checkpoint", "checkpointer"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Software Development :: Libraries :: Python Modules"
 ]
 dependencies = [
   "langgraph",
   "oracledb"
 ]
+
+[project.urls]
+Homepage = "https://github.com/luigisaetta/langgraph-oracle"
+Documentation = "https://luigisaetta.github.io/langgraph-oracle/"
+Repository = "https://github.com/luigisaetta/langgraph-oracle"
+Issues = "https://github.com/luigisaetta/langgraph-oracle/issues"
+Changelog = "https://github.com/luigisaetta/langgraph-oracle/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
@@ -27,6 +47,10 @@ dev = [
 docs = [
   "mkdocs",
   "mkdocs-material"
+]
+release = [
+  "build",
+  "twine"
 ]
 
 [tool.setuptools.packages.find]

@@ -1,0 +1,11 @@
+include LICENSE
+include README.md
+exclude .coverage
+recursive-exclude tests *
+recursive-exclude docs *
+recursive-exclude .github *
+recursive-exclude build *
+recursive-exclude dist *
+recursive-exclude site *
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]

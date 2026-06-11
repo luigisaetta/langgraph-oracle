@@ -20,6 +20,7 @@ theme:
 nav:
   - Home: index.md
   - Oracle ADB Checkpointer: oracle-adb-checkpointer.md
+  - Publishing to PyPI: releasing.md
   - Changelog: changelog.md
 
 markdown_extensions:

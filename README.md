@@ -61,6 +61,12 @@ The GitHub Actions workflow in `.github/workflows/docs.yml` publishes the site t
 
 For the first publication, enable GitHub Pages in the repository settings and select the `gh-pages` branch as the source after the first workflow run creates it.
 
+## Publishing
+
+The package is prepared for PyPI publication through GitHub Actions and PyPI Trusted Publishing.
+
+See [Publishing to PyPI](docs/releasing.md) for the release checklist.
+
 ## Development Workflow
 
 This repository follows a spec-driven workflow.

@@ -14,3 +14,4 @@
 - Added a dedicated Oracle ADB checkpointer usage guide for LangGraph agents.
 - Updated Oracle ADB documentation and examples to require a dedicated checkpoint schema instead of the ADB administrative schema.
 - Added MkDocs configuration and a GitHub Actions workflow for publishing documentation to GitHub Pages.
+- Added PyPI packaging metadata, release dependencies, and a Trusted Publishing workflow.
