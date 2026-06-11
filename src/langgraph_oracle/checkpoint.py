@@ -11,7 +11,7 @@ import json
 import random
 import threading
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Protocol, cast
 
 import oracledb
@@ -44,6 +44,18 @@ from langgraph_oracle.serialization import (
     load_blobs,
     load_writes,
     split_checkpoint_blobs,
+)
+from langgraph_oracle.sql import (
+    checkpoint_by_id_sql,
+    checkpoint_keys_for_run_sql,
+    latest_checkpoint_sql,
+    list_checkpoints_query,
+    merge_blob_sql,
+    merge_checkpoint_sql,
+    merge_write_sql,
+    select_blob_sql,
+    select_writes_sql,
+    setup_migration_sql,
 )
 
 
@@ -102,7 +114,9 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         self.tables = OracleCheckpointTables.from_prefix(table_prefix)
         self.commit_on_success = commit_on_success
         self.close_on_exit = close_on_exit
-        self._lock = threading.RLock()
+        self._connection_lock = threading.RLock()
+        self._thread_locks: dict[str, threading.RLock] = {}
+        self._thread_locks_guard = threading.Lock()
 
     @classmethod
     @contextmanager
@@ -163,16 +177,7 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
                 self._execute_ddl_if_missing(cursor, statement)
             for statement in create_index_statements(self.tables):
                 self._execute_ddl_if_missing(cursor, statement)
-            cursor.execute(
-                f"""
-                MERGE INTO {self.tables.migrations} target
-                USING (SELECT :1 AS version_number FROM dual) source
-                ON (target.version_number = source.version_number)
-                WHEN NOT MATCHED THEN
-                    INSERT (version_number) VALUES (source.version_number)
-                """,
-                (0,),
-            )
+            cursor.execute(setup_migration_sql(self.tables), (0,))
 
     def get_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         """Fetch a checkpoint tuple using LangGraph configuration.
@@ -186,32 +191,19 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         """
         thread_id, checkpoint_ns, checkpoint_id = self._config_values(config)
         if checkpoint_id is None:
-            statement = f"""
-                SELECT thread_id, checkpoint_ns, checkpoint_id,
-                       parent_checkpoint_id, checkpoint, metadata
-                FROM {self.tables.checkpoints}
-                WHERE thread_id = :1 AND checkpoint_ns = :2
-                ORDER BY checkpoint_id DESC
-                FETCH FIRST 1 ROWS ONLY
-            """
+            statement = latest_checkpoint_sql(self.tables)
             parameters = (thread_id, checkpoint_ns)
         else:
-            statement = f"""
-                SELECT thread_id, checkpoint_ns, checkpoint_id,
-                       parent_checkpoint_id, checkpoint, metadata
-                FROM {self.tables.checkpoints}
-                WHERE thread_id = :1
-                  AND checkpoint_ns = :2
-                  AND checkpoint_id = :3
-            """
+            statement = checkpoint_by_id_sql(self.tables)
             parameters = (thread_id, checkpoint_ns, checkpoint_id)
 
-        with self._managed_cursor(write=False) as cursor:
-            cursor.execute(statement, parameters)
-            row = cursor.fetchone()
-            if row is None:
-                return None
-            return self._load_checkpoint_tuple(cursor, row)
+        with self._thread_guard(thread_id):
+            with self._managed_cursor(write=False) as cursor:
+                cursor.execute(statement, parameters)
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return self._load_checkpoint_tuple(cursor, row)
 
     def list(
         self,
@@ -236,18 +228,19 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         statement, parameters = self._list_query(config=config, before=before)
         yielded = 0
 
-        with self._managed_cursor(write=False) as cursor:
-            cursor.execute(statement, parameters)
-            for row in cursor.fetchall():
-                checkpoint_tuple = self._load_checkpoint_tuple(cursor, row)
-                if filter and not self._metadata_matches(
-                    checkpoint_tuple.metadata, filter
-                ):
-                    continue
-                yield checkpoint_tuple
-                yielded += 1
-                if limit is not None and yielded >= limit:
-                    break
+        with self._read_thread_guard(config):
+            with self._managed_cursor(write=False) as cursor:
+                cursor.execute(statement, parameters)
+                for row in cursor.fetchall():
+                    checkpoint_tuple = self._load_checkpoint_tuple(cursor, row)
+                    if filter and not self._metadata_matches(
+                        checkpoint_tuple.metadata, filter
+                    ):
+                        continue
+                    yield checkpoint_tuple
+                    yielded += 1
+                    if limit is not None and yielded >= limit:
+                        break
 
     def put(
         self,
@@ -278,20 +271,21 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         )
         checkpoint_metadata = get_serializable_checkpoint_metadata(config, metadata)
 
-        with self._managed_cursor(write=True) as cursor:
-            for row in blob_rows:
-                cursor.execute(self._merge_blob_sql(), row)
-            cursor.execute(
-                self._merge_checkpoint_sql(),
-                (
-                    thread_id,
-                    checkpoint_ns,
-                    checkpoint["id"],
-                    parent_checkpoint_id,
-                    self._to_json(checkpoint_copy),
-                    self._to_json(checkpoint_metadata),
-                ),
-            )
+        with self._thread_guard(thread_id):
+            with self._managed_cursor(write=True) as cursor:
+                for row in blob_rows:
+                    cursor.execute(merge_blob_sql(self.tables), row)
+                cursor.execute(
+                    merge_checkpoint_sql(self.tables),
+                    (
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint["id"],
+                        parent_checkpoint_id,
+                        self._to_json(checkpoint_copy),
+                        self._to_json(checkpoint_metadata),
+                    ),
+                )
 
         return {
             "configurable": {
@@ -329,11 +323,17 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
             writes=writes,
         )
         replace_existing = all(channel in WRITES_IDX_MAP for channel, _ in writes)
-        statement = self._merge_write_sql(update_existing=replace_existing)
+        statement = merge_write_sql(self.tables, update_existing=replace_existing)
 
-        with self._managed_cursor(write=True) as cursor:
-            for row in rows:
-                cursor.execute(statement, row)
+        with self._thread_guard(thread_id):
+            with self._managed_cursor(write=True) as cursor:
+                for row in rows:
+                    self._execute_write_row(
+                        cursor,
+                        statement,
+                        row,
+                        ignore_duplicate=not replace_existing,
+                    )
 
     def delete_thread(self, thread_id: str) -> None:
         """Delete checkpoints, blobs, and writes for a thread.
@@ -341,17 +341,20 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         Args:
             thread_id: LangGraph thread identifier.
         """
-        with self._managed_cursor(write=True) as cursor:
-            cursor.execute(
-                f"DELETE FROM {self.tables.writes} WHERE thread_id = :1", (thread_id,)
-            )
-            cursor.execute(
-                f"DELETE FROM {self.tables.blobs} WHERE thread_id = :1", (thread_id,)
-            )
-            cursor.execute(
-                f"DELETE FROM {self.tables.checkpoints} WHERE thread_id = :1",
-                (thread_id,),
-            )
+        with self._thread_guard(thread_id):
+            with self._managed_cursor(write=True) as cursor:
+                cursor.execute(
+                    f"DELETE FROM {self.tables.writes} WHERE thread_id = :1",
+                    (thread_id,),
+                )
+                cursor.execute(
+                    f"DELETE FROM {self.tables.blobs} WHERE thread_id = :1",
+                    (thread_id,),
+                )
+                cursor.execute(
+                    f"DELETE FROM {self.tables.checkpoints} WHERE thread_id = :1",
+                    (thread_id,),
+                )
 
     def delete_for_runs(self, run_ids: Sequence[str]) -> None:
         """Delete checkpoints and writes whose metadata belongs to run ids.
@@ -361,28 +364,35 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         """
         if not run_ids:
             return
-        with self._managed_cursor(write=True) as cursor:
+        rows_by_run: list[list[tuple[str, str, str]]] = []
+        with self._managed_cursor(write=False) as cursor:
             for run_id in run_ids:
                 rows = self._checkpoint_keys_for_run(cursor, run_id)
-                for thread_id, checkpoint_ns, checkpoint_id in rows:
-                    cursor.execute(
-                        f"""
-                        DELETE FROM {self.tables.writes}
-                        WHERE thread_id = :1
-                          AND checkpoint_ns = :2
-                          AND checkpoint_id = :3
-                        """,
-                        (thread_id, checkpoint_ns, checkpoint_id),
-                    )
-                    cursor.execute(
-                        f"""
-                        DELETE FROM {self.tables.checkpoints}
-                        WHERE thread_id = :1
-                          AND checkpoint_ns = :2
-                          AND checkpoint_id = :3
-                        """,
-                        (thread_id, checkpoint_ns, checkpoint_id),
-                    )
+                rows_by_run.append(rows)
+
+        thread_ids = [row[0] for rows in rows_by_run for row in rows]
+        with self._thread_guard(*thread_ids):
+            with self._managed_cursor(write=True) as cursor:
+                for rows in rows_by_run:
+                    for thread_id, checkpoint_ns, checkpoint_id in rows:
+                        cursor.execute(
+                            f"""
+                            DELETE FROM {self.tables.writes}
+                            WHERE thread_id = :1
+                              AND checkpoint_ns = :2
+                              AND checkpoint_id = :3
+                            """,
+                            (thread_id, checkpoint_ns, checkpoint_id),
+                        )
+                        cursor.execute(
+                            f"""
+                            DELETE FROM {self.tables.checkpoints}
+                            WHERE thread_id = :1
+                              AND checkpoint_ns = :2
+                              AND checkpoint_id = :3
+                            """,
+                            (thread_id, checkpoint_ns, checkpoint_id),
+                        )
 
     def copy_thread(self, source_thread_id: str, target_thread_id: str) -> None:
         """Copy all checkpoint rows from one thread id to another.
@@ -391,43 +401,44 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
             source_thread_id: Source LangGraph thread id.
             target_thread_id: Target LangGraph thread id.
         """
-        with self._managed_cursor(write=True) as cursor:
-            cursor.execute(
-                f"""
-                INSERT INTO {self.tables.checkpoints}
-                    (thread_id, checkpoint_ns, checkpoint_id,
-                     parent_checkpoint_id, checkpoint, metadata)
-                SELECT :1, checkpoint_ns, checkpoint_id,
-                       parent_checkpoint_id, checkpoint, metadata
-                FROM {self.tables.checkpoints}
-                WHERE thread_id = :2
-                """,
-                (target_thread_id, source_thread_id),
-            )
-            cursor.execute(
-                f"""
-                INSERT INTO {self.tables.blobs}
-                    (thread_id, checkpoint_ns, channel, version,
-                     type_tag, blob_value)
-                SELECT :1, checkpoint_ns, channel, version,
-                       type_tag, blob_value
-                FROM {self.tables.blobs}
-                WHERE thread_id = :2
-                """,
-                (target_thread_id, source_thread_id),
-            )
-            cursor.execute(
-                f"""
-                INSERT INTO {self.tables.writes}
-                    (thread_id, checkpoint_ns, checkpoint_id, task_id,
-                     task_path, write_idx, channel, type_tag, blob_value)
-                SELECT :1, checkpoint_ns, checkpoint_id, task_id,
-                       task_path, write_idx, channel, type_tag, blob_value
-                FROM {self.tables.writes}
-                WHERE thread_id = :2
-                """,
-                (target_thread_id, source_thread_id),
-            )
+        with self._thread_guard(source_thread_id, target_thread_id):
+            with self._managed_cursor(write=True) as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self.tables.checkpoints}
+                        (thread_id, checkpoint_ns, checkpoint_id,
+                         parent_checkpoint_id, checkpoint, metadata)
+                    SELECT :1, checkpoint_ns, checkpoint_id,
+                           parent_checkpoint_id, checkpoint, metadata
+                    FROM {self.tables.checkpoints}
+                    WHERE thread_id = :2
+                    """,
+                    (target_thread_id, source_thread_id),
+                )
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self.tables.blobs}
+                        (thread_id, checkpoint_ns, channel, version,
+                         type_tag, blob_value)
+                    SELECT :1, checkpoint_ns, channel, version,
+                           type_tag, blob_value
+                    FROM {self.tables.blobs}
+                    WHERE thread_id = :2
+                    """,
+                    (target_thread_id, source_thread_id),
+                )
+                cursor.execute(
+                    f"""
+                    INSERT INTO {self.tables.writes}
+                        (thread_id, checkpoint_ns, checkpoint_id, task_id,
+                         task_path, write_idx, channel, type_tag, blob_value)
+                    SELECT :1, checkpoint_ns, checkpoint_id, task_id,
+                           task_path, write_idx, channel, type_tag, blob_value
+                    FROM {self.tables.writes}
+                    WHERE thread_id = :2
+                    """,
+                    (target_thread_id, source_thread_id),
+                )
 
     def prune(
         self,
@@ -618,10 +629,13 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
     @contextmanager
     def _managed_cursor(self, *, write: bool) -> Iterator[_Cursor]:
         """Yield a cursor from a connection or pool and manage transactions."""
-        with self._lock:
+        connection_context = (
+            nullcontext() if self._uses_pool() else self._connection_lock
+        )
+        with connection_context:
             acquired_connection = False
             connection = self.conn
-            if hasattr(self.conn, "acquire"):
+            if self._uses_pool():
                 connection = self.conn.acquire()
                 acquired_connection = True
 
@@ -638,6 +652,64 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
                 cursor.close()
                 if acquired_connection:
                     connection.close()
+
+    @contextmanager
+    def _thread_guard(self, *thread_ids: str) -> Iterator[None]:
+        """Serialize same-process operations that touch the same thread ids."""
+        locks = self._locks_for_threads(thread_ids)
+        for thread_lock in locks:
+            thread_lock.acquire()
+        try:
+            yield
+        finally:
+            for thread_lock in reversed(locks):
+                thread_lock.release()
+
+    @contextmanager
+    def _read_thread_guard(self, config: RunnableConfig | None) -> Iterator[None]:
+        """Guard reads by thread id when the caller supplied one."""
+        configurable = config.get("configurable") if config else None
+        if configurable and "thread_id" in configurable:
+            with self._thread_guard(str(configurable["thread_id"])):
+                yield
+            return
+        yield
+
+    def _locks_for_threads(self, thread_ids: Sequence[str]) -> list[threading.RLock]:
+        """Return stable locks for thread ids in deadlock-safe order."""
+        unique_thread_ids = sorted({str(thread_id) for thread_id in thread_ids})
+        with self._thread_locks_guard:
+            return [
+                self._thread_locks.setdefault(thread_id, threading.RLock())
+                for thread_id in unique_thread_ids
+            ]
+
+    def _uses_pool(self) -> bool:
+        """Return whether the connection-like object behaves as a pool."""
+        return hasattr(self.conn, "acquire")
+
+    def _execute_write_row(
+        self,
+        cursor: _Cursor,
+        statement: str,
+        row: tuple[str, str, str, str, str, int, str, str, bytes],
+        *,
+        ignore_duplicate: bool,
+    ) -> None:
+        """Execute one write row and optionally ignore duplicate races."""
+        try:
+            cursor.execute(statement, row)
+        except oracledb.DatabaseError as exc:
+            if ignore_duplicate and self._is_unique_constraint_error(exc):
+                return
+            raise
+
+    @staticmethod
+    def _is_unique_constraint_error(exc: oracledb.DatabaseError) -> bool:
+        """Return whether an Oracle error is a unique constraint violation."""
+        error = exc.args[0] if exc.args else None
+        error_code = getattr(error, "code", None)
+        return error_code == 1 or "ORA-00001" in str(exc)
 
     @staticmethod
     def _execute_ddl_if_missing(cursor: _Cursor, statement: str) -> None:
@@ -742,14 +814,7 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         rows: list[tuple[str, str, bytes | None]] = []
         for channel, version in channel_versions.items():
             cursor.execute(
-                f"""
-                SELECT channel, type_tag, blob_value
-                FROM {self.tables.blobs}
-                WHERE thread_id = :1
-                  AND checkpoint_ns = :2
-                  AND channel = :3
-                  AND version = :4
-                """,
+                select_blob_sql(self.tables),
                 (thread_id, checkpoint_ns, channel, str(version)),
             )
             row = cursor.fetchone()
@@ -767,14 +832,7 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
     ) -> list[tuple[str, str, str, bytes]]:
         """Load pending writes for one checkpoint."""
         cursor.execute(
-            f"""
-            SELECT task_id, channel, type_tag, blob_value
-            FROM {self.tables.writes}
-            WHERE thread_id = :1
-              AND checkpoint_ns = :2
-              AND checkpoint_id = :3
-            ORDER BY task_id, write_idx
-            """,
+            select_writes_sql(self.tables),
             (thread_id, checkpoint_ns, checkpoint_id),
         )
         return [
@@ -786,14 +844,7 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         self, cursor: _Cursor, run_id: str
     ) -> list[tuple[str, str, str]]:
         """Return checkpoint keys for one LangGraph run id."""
-        cursor.execute(
-            f"""
-            SELECT thread_id, checkpoint_ns, checkpoint_id
-            FROM {self.tables.checkpoints}
-            WHERE JSON_VALUE(metadata, '$.run_id') = :1
-            """,
-            (run_id,),
-        )
+        cursor.execute(checkpoint_keys_for_run_sql(self.tables), (run_id,))
         return [(row[0], row[1], row[2]) for row in cursor.fetchall()]
 
     def _config_values(
@@ -823,134 +874,20 @@ class OracleADBCheckpointer(BaseCheckpointSaver[str]):
         before: RunnableConfig | None,
     ) -> tuple[str, tuple[Any, ...]]:
         """Build the checkpoint listing query and parameters."""
-        clauses: list[str] = []
-        parameters: list[Any] = []
+        thread_id: str | None = None
+        checkpoint_ns: str | None = None
+        checkpoint_id: str | None = None
         if config is not None:
             thread_id, checkpoint_ns, checkpoint_id = self._config_values(config)
-            clauses.append("thread_id = :1")
-            parameters.append(thread_id)
-            clauses.append(f"checkpoint_ns = :{len(parameters) + 1}")
-            parameters.append(checkpoint_ns)
-            if checkpoint_id is not None:
-                clauses.append(f"checkpoint_id = :{len(parameters) + 1}")
-                parameters.append(checkpoint_id)
 
+        before_id = None
         if before is not None:
             before_id = get_checkpoint_id(before)
-            if before_id is not None:
-                clauses.append(f"checkpoint_id < :{len(parameters) + 1}")
-                parameters.append(before_id)
 
-        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        return (
-            f"""
-            SELECT thread_id, checkpoint_ns, checkpoint_id,
-                   parent_checkpoint_id, checkpoint, metadata
-            FROM {self.tables.checkpoints}
-            {where_clause}
-            ORDER BY checkpoint_id DESC
-            """,
-            tuple(parameters),
+        return list_checkpoints_query(
+            self.tables,
+            thread_id=thread_id,
+            checkpoint_ns=checkpoint_ns,
+            checkpoint_id=checkpoint_id,
+            before_checkpoint_id=before_id,
         )
-
-    def _merge_checkpoint_sql(self) -> str:
-        """Return Oracle MERGE SQL for checkpoint rows."""
-        return f"""
-            MERGE INTO {self.tables.checkpoints} target
-            USING (
-                SELECT :1 AS thread_id,
-                       :2 AS checkpoint_ns,
-                       :3 AS checkpoint_id,
-                       :4 AS parent_checkpoint_id,
-                       :5 AS checkpoint,
-                       :6 AS metadata
-                FROM dual
-            ) source
-            ON (
-                target.thread_id = source.thread_id
-                AND target.checkpoint_ns = source.checkpoint_ns
-                AND target.checkpoint_id = source.checkpoint_id
-            )
-            WHEN MATCHED THEN UPDATE SET
-                target.parent_checkpoint_id = source.parent_checkpoint_id,
-                target.checkpoint = source.checkpoint,
-                target.metadata = source.metadata
-            WHEN NOT MATCHED THEN INSERT (
-                thread_id, checkpoint_ns, checkpoint_id,
-                parent_checkpoint_id, checkpoint, metadata
-            ) VALUES (
-                source.thread_id, source.checkpoint_ns, source.checkpoint_id,
-                source.parent_checkpoint_id, source.checkpoint, source.metadata
-            )
-        """
-
-    def _merge_blob_sql(self) -> str:
-        """Return Oracle MERGE SQL for serialized channel blobs."""
-        return f"""
-            MERGE INTO {self.tables.blobs} target
-            USING (
-                SELECT :1 AS thread_id,
-                       :2 AS checkpoint_ns,
-                       :3 AS channel,
-                       :4 AS version,
-                       :5 AS type_tag,
-                       :6 AS blob_value
-                FROM dual
-            ) source
-            ON (
-                target.thread_id = source.thread_id
-                AND target.checkpoint_ns = source.checkpoint_ns
-                AND target.channel = source.channel
-                AND target.version = source.version
-            )
-            WHEN NOT MATCHED THEN INSERT (
-                thread_id, checkpoint_ns, channel, version, type_tag, blob_value
-            ) VALUES (
-                source.thread_id, source.checkpoint_ns, source.channel,
-                source.version, source.type_tag, source.blob_value
-            )
-        """
-
-    def _merge_write_sql(self, *, update_existing: bool) -> str:
-        """Return Oracle MERGE SQL for pending writes."""
-        update_clause = (
-            """
-            WHEN MATCHED THEN UPDATE SET
-                target.channel = source.channel,
-                target.type_tag = source.type_tag,
-                target.blob_value = source.blob_value
-            """
-            if update_existing
-            else ""
-        )
-        return f"""
-            MERGE INTO {self.tables.writes} target
-            USING (
-                SELECT :1 AS thread_id,
-                       :2 AS checkpoint_ns,
-                       :3 AS checkpoint_id,
-                       :4 AS task_id,
-                       :5 AS task_path,
-                       :6 AS write_idx,
-                       :7 AS channel,
-                       :8 AS type_tag,
-                       :9 AS blob_value
-                FROM dual
-            ) source
-            ON (
-                target.thread_id = source.thread_id
-                AND target.checkpoint_ns = source.checkpoint_ns
-                AND target.checkpoint_id = source.checkpoint_id
-                AND target.task_id = source.task_id
-                AND target.write_idx = source.write_idx
-            )
-            {update_clause}
-            WHEN NOT MATCHED THEN INSERT (
-                thread_id, checkpoint_ns, checkpoint_id, task_id,
-                task_path, write_idx, channel, type_tag, blob_value
-            ) VALUES (
-                source.thread_id, source.checkpoint_ns, source.checkpoint_id,
-                source.task_id, source.task_path, source.write_idx,
-                source.channel, source.type_tag, source.blob_value
-            )
-        """

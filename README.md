@@ -88,6 +88,17 @@ The expected toolchain is:
 
 Unit tests should not require live OCI resources. Integration tests that require Oracle ADB or OCI credentials must be clearly marked and documented.
 
+## Concurrency Notes
+
+`OracleADBCheckpointer` is designed for concurrent LangGraph runs, with the following current behavior:
+
+- Operations touching the same `thread_id` are serialized inside one Python process.
+- A single `oracledb.Connection` is protected by a connection lock.
+- An `oracledb.ConnectionPool` is allowed to provide a separate connection per operation, so different `thread_id` values can proceed concurrently.
+- Regular duplicate pending writes are treated as idempotent when Oracle reports a unique constraint race.
+
+Administrative operations such as `delete_thread`, `delete_for_runs`, and `copy_thread` should not be run against an active thread from another process unless the caller coordinates that lifecycle externally.
+
 ## Repository Status
 
 The repository is currently at the project bootstrap stage.
