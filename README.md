@@ -34,6 +34,10 @@ Expected capabilities include:
 
 Additional facilities may be added later, but they should follow the same principles: small, explicit adapters; OCI-aware behavior; readable code; and strong tests.
 
+## Feature Guides
+
+- [Oracle ADB Checkpointer](docs/oracle-adb-checkpointer.md): how to configure and use the checkpointer in LangGraph agents.
+
 ## Development Workflow
 
 This repository follows a spec-driven workflow.

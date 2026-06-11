@@ -11,3 +11,4 @@
 - Improved checkpointer concurrency behavior with per-thread locks, pool-aware connection handling, and duplicate-write race handling.
 - Documented concurrency expectations and administrative-operation guardrails.
 - Refactored Oracle checkpointer SQL statement generation into a dedicated module to keep the main checkpointer implementation easier to maintain.
+- Added a dedicated Oracle ADB checkpointer usage guide for LangGraph agents.
